@@ -1,7 +1,6 @@
 import os
 import datetime
 import pandas as pd
-import cv2
 import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
@@ -13,10 +12,8 @@ from openpyxl import Workbook
 
 PLANILHA = "planilha.xlsx"
 
-IMG_SIZE = 224
-
 # -----------------------------
-# IA - CONHECIMENTO OTIMIZADO
+# CONHECIMENTO IA (OTIMIZADO)
 # -----------------------------
 
 conhecimento = {
@@ -52,7 +49,7 @@ labels_sup = list(superficies.keys())
 textos_sup = list(superficies.values())
 
 # -----------------------------
-# MODELO
+# MODELO CLIP
 # -----------------------------
 
 print("Carregando CLIP...")
@@ -89,6 +86,7 @@ def analisar_clip(imagem):
 
     return resultados
 
+
 def detectar_superficie(imagem):
 
     inputs = clip_processor(
@@ -106,26 +104,26 @@ def detectar_superficie(imagem):
     return labels_sup[idx]
 
 # -----------------------------
-# MULTI-ANÁLISE
+# MULTI-ANÁLISE (SEM CV2)
 # -----------------------------
 
-def gerar_cortes(imagem_cv):
+def gerar_cortes(img_np):
 
-    h, w, _ = imagem_cv.shape
+    h, w, _ = img_np.shape
 
     cortes = []
 
     # imagem inteira
-    cortes.append(imagem_cv)
+    cortes.append(img_np)
 
     # centro
-    cortes.append(imagem_cv[h//4:3*h//4, w//4:3*w//4])
+    cortes.append(img_np[h//4:3*h//4, w//4:3*w//4])
 
     # canto superior
-    cortes.append(imagem_cv[0:h//2, 0:w//2])
+    cortes.append(img_np[0:h//2, 0:w//2])
 
     # canto inferior
-    cortes.append(imagem_cv[h//2:h, w//2:w])
+    cortes.append(img_np[h//2:h, w//2:w])
 
     return cortes
 
@@ -170,18 +168,20 @@ def rodar_analise(pasta):
 
         print("Analisando:", arquivo)
 
-        img_cv = cv2.imread(caminho)
-
-        if img_cv is None:
+        try:
+            img_pil_full = Image.open(caminho).convert("RGB")
+        except:
             continue
 
-        cortes = gerar_cortes(img_cv)
+        img_np = np.array(img_pil_full)
+
+        cortes = gerar_cortes(img_np)
 
         votos = []
 
         for corte in cortes:
 
-            img_pil = Image.fromarray(cv2.cvtColor(corte, cv2.COLOR_BGR2RGB))
+            img_pil = Image.fromarray(corte)
 
             superficie = detectar_superficie(img_pil)
             res = analisar_clip(img_pil)
