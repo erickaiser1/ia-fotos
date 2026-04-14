@@ -13,7 +13,7 @@ from openpyxl import Workbook
 PLANILHA = "planilha.xlsx"
 
 # -----------------------------
-# CONHECIMENTO IA (OTIMIZADO)
+# CONHECIMENTO IA
 # -----------------------------
 
 conhecimento = {
@@ -33,11 +33,17 @@ conhecimento = {
 "cftv":"câmera de segurança instalada",
 "porta de rolagem":"porta metálica enrolável",
 "recarga extintor":"extintor de incêndio",
+"ventilador":"ventilador de teto ou parede",
+"lâmpada":"lâmpada instalada",
 "sem_problema":"ambiente em bom estado, sem danos, sem problemas estruturais"
 }
 
 labels = list(conhecimento.keys())
 textos = list(conhecimento.values())
+
+# -----------------------------
+# SUPERFÍCIE
+# -----------------------------
 
 superficies = {
 "parede":"parede de alvenaria vertical",
@@ -49,7 +55,7 @@ labels_sup = list(superficies.keys())
 textos_sup = list(superficies.values())
 
 # -----------------------------
-# MODELO CLIP
+# MODELO
 # -----------------------------
 
 print("Carregando CLIP...")
@@ -57,7 +63,37 @@ clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 print("CLIP pronto!")
 
+# -----------------------------
+# PLANILHA (COM LIMPEZA)
+# -----------------------------
+
 df = pd.read_excel(PLANILHA)
+df["PROBLEMAS"] = df["PROBLEMAS"].astype(str).str.strip().str.lower()
+
+# -----------------------------
+# MAPA DE PROBLEMAS (ALINHADO)
+# -----------------------------
+
+mapa_problemas = {
+"fiação exposta":"fiação exposta",
+"infiltrações":"infiltrações",
+"rachaduras":"rachaduras",
+"pintura":"pintura",
+"telhado":"telhado",
+"calha entupida":"calha entupida",
+"revestimento":"revestimento",
+"vidro":"vidro",
+"porta":"porta",
+"forro":"forro",
+"torneira":"torneira",
+"cano":"cano",
+"ralo":"ralo",
+"cftv":"cftv",
+"porta de rolagem":"porta de rolagem",
+"recarga extintor":"recarga extintor",
+"ventilador":"ventilador",
+"lâmpada":"lâmpada"
+}
 
 # -----------------------------
 # FUNÇÕES IA
@@ -104,7 +140,7 @@ def detectar_superficie(imagem):
     return labels_sup[idx]
 
 # -----------------------------
-# MULTI-ANÁLISE (SEM CV2)
+# CORTES (SEM CV2)
 # -----------------------------
 
 def gerar_cortes(img_np):
@@ -113,16 +149,9 @@ def gerar_cortes(img_np):
 
     cortes = []
 
-    # imagem inteira
     cortes.append(img_np)
-
-    # centro
     cortes.append(img_np[h//4:3*h//4, w//4:3*w//4])
-
-    # canto superior
     cortes.append(img_np[0:h//2, 0:w//2])
-
-    # canto inferior
     cortes.append(img_np[h//2:h, w//2:w])
 
     return cortes
@@ -190,7 +219,6 @@ def rodar_analise(pasta):
 
             votos.append((cat, conf))
 
-        # votação final
         categorias = [v[0] for v in votos]
         categoria_final = max(set(categorias), key=categorias.count)
 
@@ -199,8 +227,12 @@ def rodar_analise(pasta):
         prioridade = ""
 
         if categoria_final != "Sem problemas":
+
+            categoria_limpa = categoria_final.strip().lower()
+            chave = mapa_problemas.get(categoria_limpa, categoria_limpa)
+
             for _, row in df.iterrows():
-                if categoria_final.lower() in str(row["PROBLEMAS"]).lower():
+                if chave == row["PROBLEMAS"]:
                     prioridade = row["PRIORIDADE"]
                     break
 
@@ -226,7 +258,10 @@ def rodar_analise(pasta):
     for r in resultados:
         ws.append(list(r.values()))
 
-    # resumo
+    # -----------------------------
+    # RESUMO
+    # -----------------------------
+
     ws2 = wb.create_sheet("Resumo")
 
     df_result = pd.DataFrame(resultados)
