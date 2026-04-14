@@ -2,152 +2,234 @@ import os
 import datetime
 import pandas as pd
 import cv2
-from ultralytics import YOLO
+import numpy as np
+from PIL import Image
+from transformers import CLIPProcessor, CLIPModel
 from openpyxl import Workbook
-from openpyxl.drawing.image import Image as ExcelImage
-from openpyxl.chart import BarChart, Reference
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 
 PLANILHA = "planilha.xlsx"
-MODELO = "best.pt"  # modelo YOLO
 
-DOWNLOADS = os.getcwd()
-
-agora = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-RELATORIO = os.path.join(DOWNLOADS, f"relatorio_{agora}.xlsx")
-
-PASTA_PROCESSADAS = os.path.join(DOWNLOADS, "processadas")
-os.makedirs(PASTA_PROCESSADAS, exist_ok=True)
+IMG_SIZE = 224
 
 # -----------------------------
-# PLANILHA
+# IA - CONHECIMENTO OTIMIZADO
 # -----------------------------
 
-df = pd.read_excel(PLANILHA)
+conhecimento = {
+"fiação exposta":"fios elétricos desencapados, perigosos e visíveis fora da parede",
+"infiltrações":"parede com manchas de umidade, mofo, infiltração de água",
+"rachaduras":"parede com trincas, fissuras ou rachaduras estruturais visíveis",
+"pintura":"parede com tinta descascando, desgaste ou falhas na pintura",
+"telhado":"telhas quebradas, deslocadas ou danificadas",
+"calha entupida":"calha cheia de sujeira, folhas ou obstruída",
+"revestimento":"revestimento quebrado ou soltando da parede",
+"vidro":"vidro quebrado ou trincado",
+"porta":"porta danificada, quebrada ou desalinhada",
+"forro":"forro caindo, solto ou danificado no teto",
+"torneira":"torneira vazando água",
+"cano":"cano com vazamento ou dano",
+"ralo":"ralo entupido ou sujo",
+"cftv":"câmera de segurança instalada",
+"porta de rolagem":"porta metálica enrolável",
+"recarga extintor":"extintor de incêndio",
+"sem_problema":"ambiente em bom estado, sem danos, sem problemas estruturais"
+}
 
-coluna_problema = "PROBLEMAS"
-coluna_prioridade = "PRIORIDADE"
+labels = list(conhecimento.keys())
+textos = list(conhecimento.values())
+
+superficies = {
+"parede":"parede de alvenaria vertical",
+"teto":"teto ou forro acima",
+"chao":"piso ou chão"
+}
+
+labels_sup = list(superficies.keys())
+textos_sup = list(superficies.values())
 
 # -----------------------------
 # MODELO
 # -----------------------------
 
-print("Carregando modelo YOLO...")
-model = YOLO(MODELO)
-print("Modelo carregado!")
+print("Carregando CLIP...")
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+print("CLIP pronto!")
+
+df = pd.read_excel(PLANILHA)
 
 # -----------------------------
-# CLASSIFICAÇÃO
+# FUNÇÕES IA
 # -----------------------------
 
-def classificar_imagem(caminho_img):
+def analisar_clip(imagem):
 
-    results = model(caminho_img)
+    inputs = clip_processor(
+        text=textos,
+        images=imagem,
+        return_tensors="pt",
+        padding=True
+    )
 
-    probs = results[0].probs
+    outputs = clip_model(**inputs)
+    probs = outputs.logits_per_image.softmax(dim=1)[0]
 
-    if probs is None:
-        return "Sem problemas", 0
+    top = probs.topk(3)
 
-    classe = results[0].names[probs.top1]
-    conf = float(probs.top1conf)
+    resultados = []
 
-    # regra mínima de confiança
-    if conf < 0.30:
-        return "Sem problemas", conf
+    for i in range(3):
+        idx = top.indices[i].item()
+        conf = float(top.values[i])
+        resultados.append((labels[idx], conf))
 
-    return classe, conf
+    return resultados
+
+def detectar_superficie(imagem):
+
+    inputs = clip_processor(
+        text=textos_sup,
+        images=imagem,
+        return_tensors="pt",
+        padding=True
+    )
+
+    outputs = clip_model(**inputs)
+    probs = outputs.logits_per_image.softmax(dim=1)[0]
+
+    idx = probs.argmax().item()
+
+    return labels_sup[idx]
+
+# -----------------------------
+# MULTI-ANÁLISE
+# -----------------------------
+
+def gerar_cortes(imagem_cv):
+
+    h, w, _ = imagem_cv.shape
+
+    cortes = []
+
+    # imagem inteira
+    cortes.append(imagem_cv)
+
+    # centro
+    cortes.append(imagem_cv[h//4:3*h//4, w//4:3*w//4])
+
+    # canto superior
+    cortes.append(imagem_cv[0:h//2, 0:w//2])
+
+    # canto inferior
+    cortes.append(imagem_cv[h//2:h, w//2:w])
+
+    return cortes
+
+# -----------------------------
+# FILTRO INTELIGENTE
+# -----------------------------
+
+def escolher(resultado, superficie):
+
+    for categoria, conf in resultado:
+
+        if conf < 0.35:
+            continue
+
+        if categoria == "sem_problema":
+            return "Sem problemas", conf
+
+        if categoria in ["rachaduras","infiltrações"] and superficie != "parede":
+            continue
+
+        if categoria in ["torneira","ralo","cano"] and superficie == "teto":
+            continue
+
+        return categoria, conf
+
+    return "Sem problemas", 0
 
 # -----------------------------
 # MAIN
 # -----------------------------
 
-def rodar_analise(PASTA_FOTOS):
+def rodar_analise(pasta):
 
     resultados = []
 
-    for arquivo in os.listdir(PASTA_FOTOS):
+    for arquivo in os.listdir(pasta):
 
         if not arquivo.lower().endswith((".jpg",".png",".jpeg")):
             continue
 
-        caminho = os.path.join(PASTA_FOTOS, arquivo)
+        caminho = os.path.join(pasta, arquivo)
 
         print("Analisando:", arquivo)
 
-        imagem = cv2.imread(caminho)
+        img_cv = cv2.imread(caminho)
 
-        if imagem is None:
+        if img_cv is None:
             continue
 
-        categoria, conf = classificar_imagem(caminho)
+        cortes = gerar_cortes(img_cv)
 
-        # desenhar texto
-        cv2.putText(imagem, f"{categoria} ({conf:.2f})",
-                    (20,40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,(0,0,255),2)
+        votos = []
 
-        caminho_saida = os.path.join(PASTA_PROCESSADAS, arquivo)
-        cv2.imwrite(caminho_saida, imagem)
+        for corte in cortes:
+
+            img_pil = Image.fromarray(cv2.cvtColor(corte, cv2.COLOR_BGR2RGB))
+
+            superficie = detectar_superficie(img_pil)
+            res = analisar_clip(img_pil)
+
+            cat, conf = escolher(res, superficie)
+
+            votos.append((cat, conf))
+
+        # votação final
+        categorias = [v[0] for v in votos]
+        categoria_final = max(set(categorias), key=categorias.count)
+
+        conf_final = max([v[1] for v in votos if v[0] == categoria_final], default=0)
 
         prioridade = ""
 
-        if categoria != "Sem problemas":
+        if categoria_final != "Sem problemas":
             for _, row in df.iterrows():
-                if categoria.lower() in str(row[coluna_problema]).lower():
-                    prioridade = row[coluna_prioridade]
+                if categoria_final.lower() in str(row["PROBLEMAS"]).lower():
+                    prioridade = row["PRIORIDADE"]
                     break
 
         resultados.append({
             "Foto": arquivo,
-            "Categoria": categoria,
+            "Categoria": categoria_final,
             "Prioridade": prioridade,
-            "Confiança": round(conf,3),
-            "Imagem": caminho_saida
+            "Confiança": round(conf_final,3)
         })
 
     # -----------------------------
     # EXCEL
     # -----------------------------
 
+    agora = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    nome = f"relatorio_{agora}.xlsx"
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "Relatorio"
 
-    ws.append(["Foto","Categoria","Prioridade","Confiança","Imagem"])
-
-    linha = 2
+    ws.append(["Foto","Categoria","Prioridade","Confiança"])
 
     for r in resultados:
+        ws.append(list(r.values()))
 
-        ws.cell(linha,1,r["Foto"])
-        ws.cell(linha,2,r["Categoria"])
-        ws.cell(linha,3,r["Prioridade"])
-        ws.cell(linha,4,r["Confiança"])
-
-        img = ExcelImage(r["Imagem"])
-        img.width = 150
-        img.height = 150
-
-        ws.add_image(img,f"E{linha}")
-        ws.row_dimensions[linha].height = 120
-
-        linha += 1
-
-    ws.column_dimensions["E"].width = 40
-
-    # -----------------------------
-    # RESUMO (SEM GRÁFICO)
-    # -----------------------------
+    # resumo
+    ws2 = wb.create_sheet("Resumo")
 
     df_result = pd.DataFrame(resultados)
-
-    ws_resumo = wb.create_sheet("Resumo")
-
     df_filtrado = df_result[df_result["Categoria"] != "Sem problemas"]
 
     media = pd.to_numeric(df_filtrado["Prioridade"], errors='coerce').mean()
@@ -160,22 +242,16 @@ def rodar_analise(PASTA_FOTOS):
         elif media >= 4:
             emoji = "✅"
 
-    ws_resumo.append(["Média Prioridade", f"{round(media,2) if pd.notna(media) else 'N/A'} {emoji}"])
+    ws2.append(["Média Prioridade", f"{round(media,2) if pd.notna(media) else 'N/A'} {emoji}"])
 
-    # contagem (sem "Sem problemas")
     contagem = df_filtrado["Categoria"].value_counts()
 
-    ws_resumo.append([])
-    ws_resumo.append(["Problema","Quantidade"])
+    ws2.append([])
+    ws2.append(["Problema","Qtd"])
 
-    for problema, qtd in contagem.items():
-        ws_resumo.append([problema,qtd])
+    for p, q in contagem.items():
+        ws2.append([p,q])
 
-    # -----------------------------
+    wb.save(nome)
 
-    wb.save(RELATORIO)
-
-    print("\n✅ Relatório criado:")
-    print(RELATORIO)
-
-    return RELATORIO
+    return nome
