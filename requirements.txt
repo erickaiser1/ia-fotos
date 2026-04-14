@@ -1,7 +1,6 @@
-streamlit
-pandas
-opencv-python-headless
-ultralytics
-openpyxl
-numpy
+transformers
+torch
 pillow
+numpy
+pandas
+openpyxl
